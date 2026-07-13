@@ -1,0 +1,98 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >
+  Marketplace Purchase Notification - Linked Account Resources.
+  Deploys an EventBridge forwarding rule and cross-account IAM role
+  that enables the central enrichment Lambda to read agreement details.
+
+Parameters:
+  HubAccountId:
+    Type: String
+    Description: The AWS account ID where the enrichment Lambda runs
+    AllowedPattern: '^\d{12}$'
+    ConstraintDescription: Must be a 12-digit AWS account ID
+
+Resources:
+  CrossAccountRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: MarketplacePurchaseEnricher-CrossAccount
+      Description: Allows the central Marketplace Enrichment Lambda to read agreement details in this account
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${HubAccountId}:role/MarketplacePurchaseEnricher-LambdaRole'
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: MarketplaceEnricherReadPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: MarketplaceAgreementRead
+                Effect: Allow
+                Action:
+                  - aws-marketplace:DescribeAgreement
+                  - aws-marketplace:GetAgreementTerms
+                  - aws-marketplace:SearchAgreements
+                  - aws-marketplace:ListAgreementCharges
+                  - aws-marketplace:GetProduct
+                Resource: '*'
+              - Sid: MarketplaceDiscoveryRead
+                Effect: Allow
+                Action:
+                  - aws-marketplace-discovery:GetProduct
+                  - aws-marketplace-discovery:SearchListings
+                Resource: '*'
+              - Sid: CloudTrailRead
+                Effect: Allow
+                Action:
+                  - cloudtrail:LookupEvents
+                Resource: '*'
+
+  EventForwarderRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: MarketplaceEventForwarder-Role
+      Description: Allows EventBridge to forward Marketplace agreement events to the central hub account
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: ForwardToHubEventBus
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: events:PutEvents
+                Resource: !Sub 'arn:aws:events:us-east-1:${HubAccountId}:event-bus/default'
+
+  ForwardingRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Name: MarketplaceEvent-ForwardToHub
+      Description: Forwards Marketplace agreement lifecycle events to the central hub account for enrichment
+      EventPattern:
+        source:
+          - aws.agreement-marketplace
+        detail-type:
+          - 'Purchase Agreement Created - Acceptor'
+          - 'Purchase Agreement Amended - Acceptor'
+          - 'Purchase Agreement Ending - Acceptor'
+      State: ENABLED
+      Targets:
+        - Id: HubAccountEventBus
+          Arn: !Sub 'arn:aws:events:us-east-1:${HubAccountId}:event-bus/default'
+          RoleArn: !GetAtt EventForwarderRole.Arn
+
+Outputs:
+  CrossAccountRoleArn:
+    Description: ARN of the cross-account role for the enrichment Lambda
+    Value: !GetAtt CrossAccountRole.Arn
+  ForwardingRuleName:
+    Description: Name of the EventBridge forwarding rule
+    Value: !Ref ForwardingRule
